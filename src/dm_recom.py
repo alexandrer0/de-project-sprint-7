@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from pyspark.sql.types import FloatType, DateType
-from tools import get_city, write_df_dm
+from tools import get_geo, get_city, write_df_dm, dist
 
 os.environ['HADOOP_CONF_DIR'] = '/etc/hadoop/conf'
 os.environ['YARN_CONF_DIR'] = '/etc/hadoop/conf'
@@ -24,13 +24,7 @@ def main():
     # Получение событий с координатами
     df_events = spark.read.parquet(path_events).sample(0.03)
     # Получение координат городов
-    df_geo = spark.read.csv(path_geo, sep=';', inferSchema=True, header=True) \
-        .withColumn('lat', F.regexp_replace('lat', ',', '.')) \
-        .withColumn('lat', F.col('lat').cast(FloatType())) \
-        .withColumn('lng', F.regexp_replace('lng', ',', '.')) \
-        .withColumn('lng', F.col('lng').cast(FloatType())) \
-        .withColumnRenamed('lat', 'city_lat') \
-        .withColumnRenamed('lng', 'city_lon')
+    df_geo = get_geo(path_geo)
     # Подписки
     df_s_0 = df_events.where("event_type == 'subscription'") \
         .selectExpr('event.datetime', 'event.user as user_id', 'event.subscription_channel', 'lat', 'lon')
@@ -66,15 +60,6 @@ def main():
         .withColumn('TIME', F.col('event.datetime').cast('Timestamp')) \
         .withColumn('local_time', F.from_utc_timestamp(F.col('TIME'), F.col('timezone'))) \
         .selectExpr('user_id', 'lat', 'lon', 'id as zone_id', 'local_time').distinct()
-    # Расчет расстояния по координатам
-    EARTH_R = 6371
-    dist = 2 * F.lit(EARTH_R) * F.asin(
-        F.sqrt(
-            F.pow(F.sin((F.radians(F.col('lat_left')) - F.radians(F.col('lat_right'))) / 2), 2) +
-            F.cos(F.radians(F.col('lat_left'))) * F.cos(F.radians(F.col('lat_right'))) *
-            F.pow(F.sin((F.radians(F.col('lon_left')) - F.radians(F.col('lon_right'))) / 2), 2)
-        )
-    )
     # Расчет итогового датафрейма
     df_dm_recom = df_ss_mm \
         .join(df_l.selectExpr('zone_id', 'local_time', 'user_id as user_left', 'lat as lat_left', 'lon as lon_left'),

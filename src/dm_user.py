@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from pyspark.sql.types import FloatType, DateType
-from tools import get_city, write_df_dm
+from tools import get_geo, get_city, write_df_dm
 
 os.environ['HADOOP_CONF_DIR'] = '/etc/hadoop/conf'
 os.environ['YARN_CONF_DIR'] = '/etc/hadoop/conf'
@@ -28,13 +28,7 @@ def main():
         .withColumn('user_id', F.col('event.message_from')) \
         .withColumn('event_id', F.monotonically_increasing_id())
     # Получение координат городов
-    df_geo = spark.read.csv(path_geo, sep=';', inferSchema=True, header=True) \
-        .withColumn('lat', F.regexp_replace('lat', ',', '.')) \
-        .withColumn('lat', F.col('lat').cast(FloatType())) \
-        .withColumn('lng', F.regexp_replace('lng', ',', '.')) \
-        .withColumn('lng', F.col('lng').cast(FloatType())) \
-        .withColumnRenamed('lat', 'city_lat') \
-        .withColumnRenamed('lng', 'city_lon')
+    df_geo = get_geo(path_geo)
     # Привязка события к городу
     df_message_city = get_city(
         df_events=df_message,

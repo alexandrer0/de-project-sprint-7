@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 from pyspark.sql.types import FloatType, DateType
-from tools import get_city, write_df_dm
+from tools import get_geo, get_city, write_df_dm
 
 os.environ['HADOOP_CONF_DIR'] = '/etc/hadoop/conf'
 os.environ['YARN_CONF_DIR'] = '/etc/hadoop/conf'
@@ -24,13 +24,7 @@ def main():
     # Получение событий с координатами
     df_events = spark.read.parquet(path_events).sample(0.03)
     # Получение координат городов
-    df_geo = spark.read.csv(path_geo, sep=';', inferSchema=True, header=True) \
-        .withColumn('lat', F.regexp_replace('lat', ',', '.')) \
-        .withColumn('lat', F.col('lat').cast(FloatType())) \
-        .withColumn('lng', F.regexp_replace('lng', ',', '.')) \
-        .withColumn('lng', F.col('lng').cast(FloatType())) \
-        .withColumnRenamed('lat', 'city_lat') \
-        .withColumnRenamed('lng', 'city_lon')
+    df_geo = get_geo(path_geo)
     # Сообщения
     df_m_0 = df_events.where("event_type == 'message'") \
         .selectExpr('event.datetime', 'event.message_from as user_id', 'lat', 'lon')
@@ -39,6 +33,12 @@ def main():
         df_geo=df_geo
     ).withColumn('month', F.trunc(F.col('datetime'), 'month')). \
         withColumn('week', F.trunc(F.col('datetime'), 'week'))
+    # Регистрации (по первым сообщениям)
+    window_u = Window().partitionBy('user_id').orderBy(F.col('datetime'))
+    df_u = df_m \
+        .withColumn('row_number', F.row_number().over(window_u)) \
+        .filter(F.col('row_number') == 1) \
+        .drop('row_number')
     # Реакции
     df_r_0 = df_events.where("event_type == 'reaction'") \
         .selectExpr('event.datetime', 'event.reaction_from as user_id', 'event.reaction_type', 'lat', 'lon')
@@ -61,14 +61,15 @@ def main():
               'full') \
         .join(df_s.groupBy('id', 'month', 'week').agg(F.count('id').alias('week_subscription')),
               ['id', 'month', 'week'], 'full') \
+        .join(df_u.groupBy('id', 'month', 'week').agg(F.count('id').alias('week_user')),
+              ['id', 'month', 'week'], 'full') \
         .join(df_m.groupBy('id', 'month').agg(F.count('id').alias('month_message')), ['id', 'month'], 'full') \
         .join(df_r.groupBy('id', 'month').agg(F.count('id').alias('month_reaction')), ['id', 'month'], 'full') \
         .join(df_s.groupBy('id', 'month').agg(F.count('id').alias('month_subscription')), ['id', 'month'], 'full') \
-        .withColumn('week_user', F.lit(0)) \
-        .withColumn('month_user', F.lit(0)) \
+        .join(df_u.groupBy('id', 'month').agg(F.count('id').alias('month_user')), ['id', 'month'], 'full') \
         .withColumnRenamed('id', 'zone_id') \
-        .fillna(0, subset=['week_message', 'week_reaction', 'week_subscription', 'month_message', 'month_reaction',
-                           'month_subscription'])
+        .fillna(0, subset=['week_message', 'week_reaction', 'week_subscription', 'week_user',
+                           'month_message', 'month_reaction', 'month_subscription', 'month_user'])
     # Сохранение в HDFS
     write_df_dm(df_dm_zone, 'dm_zone', datetime.now().date().strftime('%Y-%m-%d'))
 
